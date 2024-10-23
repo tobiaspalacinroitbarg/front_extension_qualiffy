@@ -281,3 +281,68 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 });
+
+
+// Función para enviar el audio al servidor
+async function sendAudioToServer(audioBlob) {
+  try {
+    const formData = new FormData();
+    formData.append('file', audioBlob, 'audio.wav');
+
+    const response = await fetch('http://localhost:8000/process-audio', {
+      method: 'POST',
+      body: formData
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const data = await response.json();
+    updateAdvice(data.consejo);
+  } catch (error) {
+    console.error('Error al enviar audio al servidor:', error);
+    alert('Error al procesar el audio: ' + error.message);
+  }
+}
+
+// Función para actualizar el consejo en la interfaz
+function updateAdvice(consejo) {
+  // Actualizar el elemento del consejo IA
+  const asesorCard = document.querySelector('.card:nth-child(2)');
+  if (asesorCard) {
+    asesorCard.innerHTML = `
+      <h3>Asesor IA</h3>
+      <p>${consejo}</p>
+    `;
+  }
+}
+
+// Modificar la función convertToWav existente
+function convertToWav(blob) {
+  const reader = new FileReader();
+  reader.readAsArrayBuffer(blob);
+  reader.onloadend = async () => {
+    try {
+      const audioBuffer = reader.result;
+      const wavBlob = new Blob([audioBuffer], { type: 'audio/wav' });
+      
+      // Enviar al servidor
+      await sendAudioToServer(wavBlob);
+      
+      // Descargar el archivo localmente (mantener la funcionalidad existente)
+      const url = URL.createObjectURL(wavBlob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `audio_${new Date().toISOString()}.wav`;
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Error al procesar el audio:', error);
+      alert(`Error al procesar el audio: ${error.message}`);
+    }
+  };
+}
