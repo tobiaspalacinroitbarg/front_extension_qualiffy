@@ -156,13 +156,12 @@ h3 {
 .action-btn:hover {
   background-color: #ff6666;
 }
-
-/* Estilo para los botones de grabación de audio */
 .audio-controls {
   display: flex;
-  flex-direction: column;
-  gap: 15px;
+  flex-direction: row; /* Cambiado de column a row */
+  gap: 10px; /* Ajustado el espaciado entre botones */
   margin-top: auto;
+  justify-content: space-between; /* Distribuye el espacio entre los botones */
 }
 
 .record-btn {
@@ -176,6 +175,7 @@ h3 {
   font-weight: 600;
   font-size: 0.9em;
   transition: background-color 0.3s ease;
+  flex: 1; /* Hace que cada botón ocupe el mismo espacio */
 }
 
 .record-btn:hover {

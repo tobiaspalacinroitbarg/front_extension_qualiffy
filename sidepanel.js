@@ -282,10 +282,9 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 });
 
-
-// Función para enviar el audio al servidor
 async function sendAudioToServer(audioBlob) {
   try {
+    console.log('Iniciando envío de audio al servidor...');
     const formData = new FormData();
     formData.append('file', audioBlob, 'audio.wav');
 
@@ -299,22 +298,70 @@ async function sendAudioToServer(audioBlob) {
     }
 
     const data = await response.json();
-    updateAdvice(data.consejo);
+    console.log('Respuesta del servidor:', data);
+
+    if (data.error) {
+      throw new Error(data.error);
+    }
+
+    // Verificar que los datos existen antes de actualizar
+    if (data.asesor) {
+      updateAsesor(data.asesor);
+    } else {
+      console.warn('No se recibió datos del asesor');
+    }
+
+    if (data.consejo) {
+      updateConsejo(data.consejo);
+    } else {
+      console.warn('No se recibió datos del consejo');
+    }
+
+    if (data.manejo) {
+      updateManejo(data.manejo);
+    } else {
+      console.warn('No se recibió datos del manejo');
+    }
+
   } catch (error) {
     console.error('Error al enviar audio al servidor:', error);
     alert('Error al procesar el audio: ' + error.message);
   }
 }
-
-// Función para actualizar el consejo en la interfaz
-function updateAdvice(consejo) {
-  // Actualizar el elemento del consejo IA
+// Modificación de las funciones de actualización
+function updateAsesor(asesor) {
+  console.log('Actualizando asesor:', asesor);
   const asesorCard = document.querySelector('.card:nth-child(2)');
   if (asesorCard) {
     asesorCard.innerHTML = `
       <h3>Asesor IA</h3>
+      <p>${asesor}</p>
+    `;
+  } else {
+    console.error('No se encontró el elemento del asesor');
+  }
+}
+
+function updateConsejo(consejo) {
+  console.log('Actualizando consejo:', consejo);
+  const consejoCard = document.querySelector('.card:nth-child(3)');
+  if (consejoCard) {
+    consejoCard.innerHTML = `
+      <h3>Tener en cuenta...</h3>
       <p>${consejo}</p>
     `;
+  } else {
+    console.error('No se encontró el elemento del consejo');
+  }
+}
+
+function updateManejo(manejo) {
+  console.log('Actualizando manejo:', manejo);
+  const percentageElement = document.querySelector('.card .metric .percentage');
+  if (percentageElement) {
+    percentageElement.textContent = manejo + "%";
+  } else {
+    console.error('No se encontró el elemento del porcentaje');
   }
 }
 
