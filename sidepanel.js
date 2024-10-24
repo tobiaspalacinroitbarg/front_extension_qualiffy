@@ -102,7 +102,7 @@ async function startCapture() {
     const micGain = audioContext.createGain();
     
     // Ajustar ganancias (aumentado para el micrófono)
-    tabGain.gain.value = 0.7;    // Ganancia del tab aumentada ligeramente
+    tabGain.gain.value = 0.1;    // Ganancia del tab aumentada ligeramente
     micGain.gain.value = 1.0;    // Ganancia del micrófono aumentada significativamente
 
     // Crear compresor para el micrófono
