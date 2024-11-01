@@ -33,7 +33,7 @@ header {
 
 .logo img {
   width: 100%;
-  max-width: 100px;
+  max-width: 120px;
   height: auto;
 }
 
@@ -155,29 +155,31 @@ h3 {
 
 .action-btn:hover {
   background-color: #ff6666;
-}
-.audio-controls {
+}.audio-controls {
   display: flex;
-  flex-direction: row; /* Cambiado de column a row */
-  gap: 10px; /* Ajustado el espaciado entre botones */
-  margin-top: auto;
-  justify-content: space-between; /* Distribuye el espacio entre los botones */
+  gap: 10px;
+  justify-content: flex-start; /* Alinea los botones a la izquierda */
 }
 
-.record-btn {
-  background-color: #ff4d4d;
-  color: white;
+.start-btn,
+.stop-btn {
+  width: 20px;
+  height: 20px;
+  background-size: cover;
+  background-position: center;
+  background-color: transparent; /* Fondo transparente */
   border: none;
-  padding: 12px;
-  border-radius: 8px;
   cursor: pointer;
-  text-transform: uppercase;
-  font-weight: 600;
-  font-size: 0.9em;
-  transition: background-color 0.3s ease;
-  flex: 1; /* Hace que cada botón ocupe el mismo espacio */
+  filter: invert(1) brightness(1); /* Blanco */
 }
 
-.record-btn:hover {
-  background-color: #ff6666;
-}
+.start-btn {
+  background-image: url('images/play.png'); }
+
+.stop-btn {
+  background-image: url('images/stop.png');}
+
+  .start-btn:hover,
+  .stop-btn:hover {
+    filter: invert(1) brightness(2.0);
+  }

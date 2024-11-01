@@ -45,7 +45,7 @@ async function startCapture() {
     // Inicializar contexto de audio con mayor calidad
     audioContext = new AudioContext({
       latencyHint: 'interactive',
-      sampleRate: 48000  // Aumentado a 48kHz para mejor calidad
+      sampleRate: 60000  // Aumentado a 48kHz para mejor calidad
     });
 
     // Obtener stream del micrófono con configuración mejorada
@@ -55,7 +55,7 @@ async function startCapture() {
         noiseSuppression: true,
         autoGainControl: false,  // Desactivado para mejor control manual
         channelCount: 1,
-        sampleRate: 48000,
+        sampleRate: 60000,
         sampleSize: 24
       }
     });
@@ -103,7 +103,7 @@ async function startCapture() {
     
     // Ajustar ganancias (aumentado para el micrófono)
     tabGain.gain.value = 0.1;    // Ganancia del tab aumentada ligeramente
-    micGain.gain.value = 1.0;    // Ganancia del micrófono aumentada significativamente
+    micGain.gain.value = 0.7;    // Ganancia del micrófono aumentada significativamente
 
     // Crear compresor para el micrófono
     const micCompressor = audioContext.createDynamicsCompressor();
@@ -208,7 +208,6 @@ function stopCapture() {
     updateButtonStates();
   }
 }
-
 // Función para actualizar el estado de los botones
 function updateButtonStates() {
   const startBtn = document.querySelector('.start-btn');
@@ -228,7 +227,6 @@ function updateButtonStates() {
     }
   }
 }
-
 // Convertir el blob a archivo .wav
 function convertToWav(blob) {
   const reader = new FileReader();
@@ -252,7 +250,6 @@ function convertToWav(blob) {
     }
   };
 }
-
 // Inicializar cuando el DOM esté listo
 document.addEventListener('DOMContentLoaded', () => {
   updateButtonStates();
@@ -280,15 +277,14 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
   }
-});
-
+})
 async function sendAudioToServer(audioBlob) {
   try {
     console.log('Iniciando envío de audio al servidor...');
     const formData = new FormData();
     formData.append('file', audioBlob, 'audio.wav');
 
-    const response = await fetch('http://localhost:8000/process-audio', {
+    const response = await fetch('http://localhost:8000/process-mc', {
       method: 'POST',
       body: formData
     });
@@ -304,13 +300,6 @@ async function sendAudioToServer(audioBlob) {
       throw new Error(data.error);
     }
 
-    // Verificar que los datos existen antes de actualizar
-    if (data.asesor) {
-      updateAsesor(data.asesor);
-    } else {
-      console.warn('No se recibió datos del asesor');
-    }
-
     if (data.consejo) {
       updateConsejo(data.consejo);
     } else {
@@ -322,26 +311,32 @@ async function sendAudioToServer(audioBlob) {
     } else {
       console.warn('No se recibió datos del manejo');
     }
+    
+    if (data.problema) {
+      updateAsesor(data.problema, data.solucion);
+    } else {
+      console.warn('No se recibió datos del manejo');
+    }
 
   } catch (error) {
     console.error('Error al enviar audio al servidor:', error);
     alert('Error al procesar el audio: ' + error.message);
   }
+
 }
-// Modificación de las funciones de actualización
-function updateAsesor(asesor) {
-  console.log('Actualizando asesor:', asesor);
+function updateAsesor(problema,solucion) {
+  console.log('Actualizando asesor');
   const asesorCard = document.querySelector('.card:nth-child(2)');
   if (asesorCard) {
     asesorCard.innerHTML = `
       <h3>Asesor IA</h3>
-      <p>${asesor}</p>
+      <p>${problema}</p>
+      <button class="action-btn">${solucion}</button>
     `;
   } else {
     console.error('No se encontró el elemento del asesor');
   }
 }
-
 function updateConsejo(consejo) {
   console.log('Actualizando consejo:', consejo);
   const consejoCard = document.querySelector('.card:nth-child(3)');
@@ -354,7 +349,6 @@ function updateConsejo(consejo) {
     console.error('No se encontró el elemento del consejo');
   }
 }
-
 function updateManejo(manejo) {
   console.log('Actualizando manejo:', manejo);
   const percentageElement = document.querySelector('.card .metric .percentage');
@@ -364,7 +358,6 @@ function updateManejo(manejo) {
     console.error('No se encontró el elemento del porcentaje');
   }
 }
-
 // Modificar la función convertToWav existente
 function convertToWav(blob) {
   const reader = new FileReader();
