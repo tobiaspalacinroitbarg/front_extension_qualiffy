@@ -1,4 +1,3 @@
-// Variables globales
 let mediaRecorder;
 let audioChunks = [];
 let audioContext;
@@ -7,11 +6,56 @@ let micAudioSource;
 let audioDestination;
 let mediaStreamDestination;
 let isRecording = false;
+let timerInterval;
+let startTime;
+let elapsedTime = 0;
 
-// Función para verificar y solicitar permisos del micrófono
+function formatTime(milliseconds) {
+  const totalSeconds = Math.floor(milliseconds / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+}
+
+function startTimer() {
+  const timerDisplay = document.querySelector('.timer-display');
+  if (!timerDisplay) {
+    console.error('No se encontró el elemento timer-display');
+    return;
+  }
+  
+  startTime = Date.now();
+  elapsedTime = 0;
+  timerDisplay.classList.add('active');
+  
+  // Actualizar inmediatamente y luego cada 100ms para una actualización más suave
+  updateTimerDisplay();
+  timerInterval = setInterval(updateTimerDisplay, 100);
+}
+
+function updateTimerDisplay() {
+  const timerDisplay = document.querySelector('.timer-display');
+  if (!timerDisplay) return;
+  
+  elapsedTime = Date.now() - startTime;
+  timerDisplay.textContent = formatTime(elapsedTime);
+}
+
+function stopTimer() {
+  if (timerInterval) {
+    clearInterval(timerInterval);
+    timerInterval = null;
+  }
+  const timerDisplay = document.querySelector('.timer-display');
+  if (timerDisplay) {
+    timerDisplay.classList.remove('active');
+    elapsedTime = 0;
+    timerDisplay.textContent = '00:00';
+  }
+}
+
 async function requestMicrophonePermission() {
   try {
-    // Solicitar permiso explícitamente
     const constraints = {
       audio: {
         echoCancellation: true,
@@ -22,13 +66,14 @@ async function requestMicrophonePermission() {
     };
 
     const stream = await navigator.mediaDevices.getUserMedia(constraints);
-    stream.getTracks().forEach(track => track.stop()); // Liberar el stream de prueba
+    stream.getTracks().forEach(track => track.stop());
     return true;
   } catch (err) {
     console.error('Error específico al solicitar micrófono:', err.name, err.message);
     return false;
   }
 }
+
 async function startCapture() {
   try {
     if (isRecording) {
@@ -45,7 +90,7 @@ async function startCapture() {
     // Inicializar contexto de audio con mayor calidad
     audioContext = new AudioContext({
       latencyHint: 'interactive',
-      sampleRate: 60000  // Aumentado a 48kHz para mejor calidad
+      sampleRate: 96000
     });
 
     // Obtener stream del micrófono con configuración mejorada
@@ -53,14 +98,14 @@ async function startCapture() {
       audio: {
         echoCancellation: true,
         noiseSuppression: true,
-        autoGainControl: false,  // Desactivado para mejor control manual
+        autoGainControl: false,  
         channelCount: 1,
         sampleRate: 60000,
         sampleSize: 24
       }
     });
 
-    // Capturar audio de la pestaña con mayor calidad
+    // Capturar audio de la pestaña con configuración optimizada
     const tabStream = await new Promise((resolve, reject) => {
       chrome.tabs.query({active: true, currentWindow: true}, async (tabs) => {
         if (!tabs[0]) {
@@ -74,9 +119,9 @@ async function startCapture() {
           audioConstraints: {
             mandatory: {
               chromeMediaSource: 'tab',
-              echoCancellation: true,  // Desactivado para mejor calidad
-              noiseSuppression: true,  // Desactivado para mejor calidad
-              autoGainControl: false    // Desactivado para mejor control manual
+              echoCancellation: false,
+              noiseSuppression: false,
+              autoGainControl: false
             }
           }
         }, stream => {
@@ -96,14 +141,57 @@ async function startCapture() {
     // Crear y conectar nodos de audio
     tabAudioSource = audioContext.createMediaStreamSource(tabStream);
     micAudioSource = audioContext.createMediaStreamSource(micStream);
-    
-    // Crear ganancias para controlar niveles
+
+    // Configuración del procesamiento de audio para la pestaña
+    // 1. Ecualizador para mejorar claridad
+    const tabEQ = audioContext.createBiquadFilter();
+    tabEQ.type = 'lowshelf';
+    tabEQ.frequency.value = 100;
+    tabEQ.gain.value = -3;
+
+    const tabEQMid = audioContext.createBiquadFilter();
+    tabEQMid.type = 'peaking';
+    tabEQMid.frequency.value = 2500;
+    tabEQMid.Q.value = 1;
+    tabEQMid.gain.value = 2;
+
+    const tabEQHigh = audioContext.createBiquadFilter();
+    tabEQHigh.type = 'highshelf';
+    tabEQHigh.frequency.value = 8000;
+    tabEQHigh.gain.value = 1;
+
+    // 2. Compresor para mejorar la dinámica
+    const tabCompressor = audioContext.createDynamicsCompressor();
+    tabCompressor.threshold.value = -24;
+    tabCompressor.knee.value = 12;
+    tabCompressor.ratio.value = 2.5;
+    tabCompressor.attack.value = 0.005;
+    tabCompressor.release.value = 0.1;
+
+    // 3. Limitador suave para evitar distorsión
+    const tabLimiter = audioContext.createDynamicsCompressor();
+    tabLimiter.threshold.value = -3;
+    tabLimiter.knee.value = 0;
+    tabLimiter.ratio.value = 20;
+    tabLimiter.attack.value = 0.003;
+    tabLimiter.release.value = 0.01;
+
+    // Ganancia final para el tab
     const tabGain = audioContext.createGain();
+    tabGain.gain.value = 0.1;
+
+    // Ganancia para el micrófono
     const micGain = audioContext.createGain();
-    
-    // Ajustar ganancias (aumentado para el micrófono)
-    tabGain.gain.value = 0.1;    // Ganancia del tab aumentada ligeramente
-    micGain.gain.value = 0.7;    // Ganancia del micrófono aumentada significativamente
+    micGain.gain.value = 0.7;
+
+    // Conectar la cadena de procesamiento del tab
+    tabAudioSource
+      .connect(tabEQ)
+      .connect(tabEQMid)
+      .connect(tabEQHigh)
+      .connect(tabCompressor)
+      .connect(tabLimiter)
+      .connect(tabGain);
 
     // Crear compresor para el micrófono
     const micCompressor = audioContext.createDynamicsCompressor();
@@ -131,9 +219,6 @@ async function startCapture() {
       .connect(micCompressor)
       .connect(micGain);
 
-    // Conectar cadena de procesamiento del tab
-    tabAudioSource.connect(tabGain);
-
     // Crear nodo para reproducción
     audioDestination = audioContext.destination;
 
@@ -145,6 +230,7 @@ async function startCapture() {
     // Crear un segundo merger para la reproducción
     const mergerForPlayback = audioContext.createChannelMerger(2);
     tabGain.connect(mergerForPlayback);
+    micGain.connect(mergerForPlayback);
     
     // Conectar el merger de reproducción al destino de audio
     mergerForPlayback.connect(audioDestination);
@@ -155,7 +241,7 @@ async function startCapture() {
 
     mediaRecorder = new MediaRecorder(mediaStreamDestination.stream, {
       mimeType: 'audio/webm;codecs=opus',
-      audioBitsPerSecond: 256000  // Aumentado a 256kbps para mejor calidad
+      audioBitsPerSecond: 320000  // Aumentado a 320kbps para mejor calidad
     });
 
     mediaRecorder.ondataavailable = (event) => {
@@ -187,6 +273,7 @@ async function startCapture() {
     mediaRecorder.start(1000);
     isRecording = true;
     updateButtonStates();
+    startTimer();
     console.log('Grabación iniciada correctamente');
 
   } catch (error) {
@@ -200,15 +287,16 @@ async function startCapture() {
     }
   }
 }
-// Función para detener la captura
+
 function stopCapture() {
   if (mediaRecorder && mediaRecorder.state !== 'inactive') {
     mediaRecorder.stop();
     isRecording = false;
     updateButtonStates();
+    stopTimer();
   }
 }
-// Función para actualizar el estado de los botones
+
 function updateButtonStates() {
   const startBtn = document.querySelector('.start-btn');
   const stopBtn = document.querySelector('.stop-btn');
@@ -227,15 +315,20 @@ function updateButtonStates() {
     }
   }
 }
-// Convertir el blob a archivo .wav
+
 function convertToWav(blob) {
   const reader = new FileReader();
   reader.readAsArrayBuffer(blob);
-  reader.onloadend = () => {
+  reader.onloadend = async () => {
     try {
       const audioBuffer = reader.result;
-      const url = URL.createObjectURL(new Blob([audioBuffer], { type: 'audio/wav' }));
+      const wavBlob = new Blob([audioBuffer], { type: 'audio/wav' });
       
+      // Enviar al servidor
+      await sendAudioToServer(wavBlob);
+      
+      // Descargar el archivo localmente
+      const url = URL.createObjectURL(wavBlob);
       const a = document.createElement('a');
       a.href = url;
       a.download = `audio_${new Date().toISOString()}.wav`;
@@ -245,39 +338,12 @@ function convertToWav(blob) {
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
     } catch (error) {
-      console.error('Error al convertir/descargar el audio:', error);
+      console.error('Error al procesar el audio:', error);
       alert(`Error al procesar el audio: ${error.message}`);
     }
   };
 }
-// Inicializar cuando el DOM esté listo
-document.addEventListener('DOMContentLoaded', () => {
-  updateButtonStates();
-  
-  // Agregar event listeners a los botones
-  const startBtn = document.querySelector('.start-btn');
-  const stopBtn = document.querySelector('.stop-btn');
-  
-  if (startBtn) {
-    startBtn.addEventListener('click', async () => {
-      try {
-        await startCapture();
-      } catch (error) {
-        console.error('Error en startBtn:', error);
-      }
-    });
-  }
-  
-  if (stopBtn) {
-    stopBtn.addEventListener('click', () => {
-      try {
-        stopCapture();
-      } catch (error) {
-        console.error('Error en stopBtn:', error);
-      }
-    });
-  }
-})
+
 async function sendAudioToServer(audioBlob) {
   try {
     console.log('Iniciando envío de audio al servidor...');
@@ -311,19 +377,13 @@ async function sendAudioToServer(audioBlob) {
     } else {
       console.warn('No se recibió datos del manejo');
     }
-    
-    if (data.problema) {
-      updateAsesor(data.problema, data.solucion);
-    } else {
-      console.warn('No se recibió datos del manejo');
-    }
 
   } catch (error) {
     console.error('Error al enviar audio al servidor:', error);
     alert('Error al procesar el audio: ' + error.message);
   }
-
 }
+
 function updateAsesor(problema,solucion) {
   console.log('Actualizando asesor');
   const asesorCard = document.querySelector('.card:nth-child(2)');
@@ -337,6 +397,7 @@ function updateAsesor(problema,solucion) {
     console.error('No se encontró el elemento del asesor');
   }
 }
+
 function updateConsejo(consejo) {
   console.log('Actualizando consejo:', consejo);
   const consejoCard = document.querySelector('.card:nth-child(3)');
@@ -349,6 +410,7 @@ function updateConsejo(consejo) {
     console.error('No se encontró el elemento del consejo');
   }
 }
+
 function updateManejo(manejo) {
   console.log('Actualizando manejo:', manejo);
   const percentageElement = document.querySelector('.card .metric .percentage');
@@ -358,31 +420,30 @@ function updateManejo(manejo) {
     console.error('No se encontró el elemento del porcentaje');
   }
 }
-// Modificar la función convertToWav existente
-function convertToWav(blob) {
-  const reader = new FileReader();
-  reader.readAsArrayBuffer(blob);
-  reader.onloadend = async () => {
-    try {
-      const audioBuffer = reader.result;
-      const wavBlob = new Blob([audioBuffer], { type: 'audio/wav' });
-      
-      // Enviar al servidor
-      await sendAudioToServer(wavBlob);
-      
-      // Descargar el archivo localmente (mantener la funcionalidad existente)
-      const url = URL.createObjectURL(wavBlob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `audio_${new Date().toISOString()}.wav`;
-      a.style.display = 'none';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    } catch (error) {
-      console.error('Error al procesar el audio:', error);
-      alert(`Error al procesar el audio: ${error.message}`);
-    }
-  };
-}
+
+document.addEventListener('DOMContentLoaded', () => {
+  updateButtonStates();
+  
+  const startBtn = document.querySelector('.start-btn');
+  const stopBtn = document.querySelector('.stop-btn');
+  
+  if (startBtn) {
+    startBtn.addEventListener('click', async () => {
+      try {
+        await startCapture();
+      } catch (error) {
+        console.error('Error en startBtn:', error);
+      }
+    });
+  }
+  
+  if (stopBtn) {
+    stopBtn.addEventListener('click', () => {
+      try {
+        stopCapture();
+      } catch (error) {
+        console.error('Error en stopBtn:', error);
+      }
+    });
+  }
+});
