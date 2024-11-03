@@ -100,7 +100,7 @@ async function startCapture() {
         noiseSuppression: true,
         autoGainControl: false,  
         channelCount: 1,
-        sampleRate: 60000,
+        sampleRate: 96000,
         sampleSize: 24
       }
     });
@@ -241,7 +241,7 @@ async function startCapture() {
 
     mediaRecorder = new MediaRecorder(mediaStreamDestination.stream, {
       mimeType: 'audio/webm;codecs=opus',
-      audioBitsPerSecond: 320000  // Aumentado a 320kbps para mejor calidad
+      audioBitsPerSecond: 320000  
     });
 
     mediaRecorder.ondataavailable = (event) => {
