@@ -230,8 +230,6 @@ async function startCapture() {
     // Crear un segundo merger para la reproducción
     const mergerForPlayback = audioContext.createChannelMerger(2);
     tabGain.connect(mergerForPlayback);
-    micGain.connect(mergerForPlayback);
-    
     // Conectar el merger de reproducción al destino de audio
     mergerForPlayback.connect(audioDestination);
     
