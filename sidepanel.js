@@ -119,9 +119,10 @@ async function startCapture() {
           audioConstraints: {
             mandatory: {
               chromeMediaSource: 'tab',
-              echoCancellation: false,
-              noiseSuppression: false,
-              autoGainControl: false
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true,
+              sampleRate: 96000 
             }
           }
         }, stream => {
@@ -230,6 +231,7 @@ async function startCapture() {
     // Crear un segundo merger para la reproducción
     const mergerForPlayback = audioContext.createChannelMerger(2);
     tabGain.connect(mergerForPlayback);
+    
     // Conectar el merger de reproducción al destino de audio
     mergerForPlayback.connect(audioDestination);
     
@@ -408,16 +410,61 @@ function updateConsejo(consejo) {
     console.error('No se encontró el elemento del consejo');
   }
 }
-
 function updateManejo(manejo) {
   console.log('Actualizando manejo:', manejo);
+
+  // Actualizar el porcentaje en el elemento correspondiente
   const percentageElement = document.querySelector('.card .metric .percentage');
   if (percentageElement) {
     percentageElement.textContent = manejo + "%";
   } else {
     console.error('No se encontró el elemento del porcentaje');
+    return;
+  }
+
+  // Cambiar colores según el porcentaje
+  const graphElement = document.querySelector('.graph polyline');
+  const containerElement = document.querySelector('.card .metric');
+  if (manejo < 30) {
+    graphElement.style.stroke = "#4CAF50"; // Verde
+    percentageElement.style.color = "#4CAF50";
+  } else if (manejo >= 30 && manejo <= 50) {
+    graphElement.style.stroke = "#FFC107"; // Amarillo
+    percentageElement.style.color = "#FFC107";
+  } else {
+    graphElement.style.stroke = "#FF4D4D"; // Rojo
+    percentageElement.style.color = "#FF4D4D";
+  }
+
+  // Desplazar las coordenadas del polyline y agregar una nueva
+  if (graphElement) {
+    let points = graphElement.getAttribute('points').trim();
+    let pointsArray = points.split(' ').map(coord => {
+      const [x, y] = coord.split(',').map(Number);
+      return { x, y };
+    });
+
+    // Mover las coordenadas hacia la izquierda y eliminar la primera
+    pointsArray.shift();
+
+    // Calcular nueva coordenada proporcional al manejo
+    const newY = 20 - (manejo / 100) * 20; // Convertir el manejo en proporción
+    pointsArray.push({ x: 100, y: newY });
+
+    // Normalizar las coordenadas X para mantener los pasos uniformes
+    pointsArray = pointsArray.map((point, index) => ({
+      x: index * 10, // Reasignar X con un intervalo de 10
+      y: point.y
+    }));
+
+    // Actualizar los puntos en el atributo `points` del polyline
+    const updatedPoints = pointsArray.map(point => `${point.x},${point.y}`).join(' ');
+    graphElement.setAttribute('points', updatedPoints);
+  } else {
+    console.error('No se encontró el elemento del polyline');
   }
 }
+
 
 document.addEventListener('DOMContentLoaded', () => {
   updateButtonStates();
