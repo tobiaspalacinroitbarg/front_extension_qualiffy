@@ -1,5 +1,6 @@
 let mediaRecorder;
 let audioChunks = [];
+let currentChunk = [];
 let audioContext;
 let tabAudioSource;
 let micAudioSource;
@@ -9,6 +10,294 @@ let isRecording = false;
 let timerInterval;
 let startTime;
 let elapsedTime = 0;
+let chunkInterval;
+let allTranscriptions = [];
+let currentSessionId = null;
+let tabStream = null;
+let micStream = null;
+
+const CHUNK_DURATION = 10000; // 10 segundos en milisegundos
+
+async function startSession() {
+  try {
+    const response = await fetch('http://localhost:8000/start-session', {
+      method: 'POST'
+    });
+    const data = await response.json();
+    return data.session_id;
+  } catch (error) {
+    console.error('Error al iniciar sesión:', error);
+    throw error;
+  }
+}
+
+async function processAudioChunk(audioBlob) {
+  try {
+    if (!currentSessionId) {
+      throw new Error('No hay sesión activa');
+    }
+
+    const formData = new FormData();
+    formData.append('file', audioBlob, 'chunk.wav');
+
+    const response = await fetch(`http://localhost:8000/process-chunk/${currentSessionId}`, {
+      method: 'POST',
+      body: formData
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const data = await response.json();
+    
+    if (data.error) {
+      throw new Error(data.error);
+    }
+
+    // Actualizar métricas en tiempo real
+    if (data.consejo) {
+      updateConsejo(data.consejo);
+    }
+    if (data.manejo) {
+      updateManejo(data.manejo);
+    }
+
+    // Guardar la transcripción
+    if (data.transcription) {
+      allTranscriptions.push(data.transcription);
+    }
+
+  } catch (error) {
+    console.error('Error al procesar chunk de audio:', error);
+  }
+}
+
+async function endSession() {
+  try {
+    if (!currentSessionId) return;
+
+    const response = await fetch(`http://localhost:8000/end-session/${currentSessionId}`, {
+      method: 'POST'
+    });
+    const data = await response.json();
+    
+    if (data.error) {
+      throw new Error(data.error);
+    }
+
+    // Actualizar métricas finales
+    if (data.final_consejo) {
+      updateConsejo(data.final_consejo);
+    }
+    if (data.final_manejo) {
+      updateManejo(data.final_manejo);
+    }
+
+    currentSessionId = null;
+  } catch (error) {
+    console.error('Error al finalizar sesión:', error);
+  }
+}
+
+async function startCapture() {
+  try {
+    if (isRecording) {
+      console.log('Ya está grabando');
+      return;
+    }
+
+    // Iniciar nueva sesión
+    currentSessionId = await startSession();
+
+    // Reiniciar arrays
+    audioChunks = [];
+    currentChunk = [];
+    allTranscriptions = [];
+
+    // Verificar permisos del micrófono primero
+    const hasMicPermission = await requestMicrophonePermission();
+    if (!hasMicPermission) {
+      throw new Error('No se pudo obtener acceso al micrófono');
+    }
+
+    // Inicializar contexto de audio
+    audioContext = new AudioContext({
+      latencyHint: 'interactive',
+      sampleRate: 96000
+    });
+
+    // Obtener stream del micrófono
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: false,
+        channelCount: 1,
+        sampleRate: 96000,
+        sampleSize: 24
+      }
+    });
+
+    // Capturar audio de la pestaña
+    tabStream = await new Promise((resolve, reject) => {
+      chrome.tabs.query({active: true, currentWindow: true}, async (tabs) => {
+        if (!tabs[0]) {
+          reject(new Error('No se encontró una pestaña activa'));
+          return;
+        }
+
+        chrome.tabCapture.capture({
+          audio: true,
+          video: false,
+          audioConstraints: {
+            mandatory: {
+              chromeMediaSource: 'tab',
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true,
+              sampleRate: 96000
+            }
+          }
+        }, stream => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+            return;
+          }
+          if (!stream) {
+            reject(new Error('No se pudo obtener el stream de la pestaña'));
+            return;
+          }
+          resolve(stream);
+        });
+      });
+    });
+
+    // Crear y conectar nodos de audio
+    tabAudioSource = audioContext.createMediaStreamSource(tabStream);
+    micAudioSource = audioContext.createMediaStreamSource(micStream);
+
+    // Configuración del procesamiento de audio
+    const tabGain = audioContext.createGain();
+    tabGain.gain.value = 0.1;
+
+    const micGain = audioContext.createGain();
+    micGain.gain.value = 0.7;
+
+    // Conectar fuentes
+    tabAudioSource.connect(tabGain);
+    micAudioSource.connect(micGain);
+
+
+    audioDestination = audioContext.destination;
+    tabGain.connect(audioDestination);
+    
+    // Crear nodo para grabación
+    mediaStreamDestination = audioContext.createMediaStreamDestination();
+    
+    // Conectar al destino de grabación
+    tabGain.connect(mediaStreamDestination);
+    micGain.connect(mediaStreamDestination);
+
+    mediaRecorder = new MediaRecorder(mediaStreamDestination.stream, {
+      mimeType: 'audio/webm;codecs=opus',
+      audioBitsPerSecond: 320000
+    });
+
+    mediaRecorder.ondataavailable = (event) => {
+      if (event.data.size > 0) {
+        currentChunk.push(event.data);
+        audioChunks.push(event.data);
+      }
+    };
+
+    // Procesar chunks cada 10 segundos
+    chunkInterval = setInterval(async () => {
+      if (currentChunk.length > 0) {
+        const chunkBlob = new Blob(currentChunk, { type: 'audio/webm' });
+        currentChunk = []; // Reiniciar para el siguiente chunk
+        
+        // Convertir a WAV y procesar
+        const reader = new FileReader();
+        reader.readAsArrayBuffer(chunkBlob);
+        reader.onloadend = async () => {
+          const audioBuffer = reader.result;
+          const wavBlob = new Blob([audioBuffer], { type: 'audio/wav' });
+          await processAudioChunk(wavBlob);
+        };
+      }
+    }, CHUNK_DURATION);
+
+    mediaRecorder.onstop = async () => {
+      clearInterval(chunkInterval);
+      
+      // Procesar último chunk si existe
+      if (currentChunk.length > 0) {
+        const finalChunkBlob = new Blob(currentChunk, { type: 'audio/webm' });
+        const reader = new FileReader();
+        reader.readAsArrayBuffer(finalChunkBlob);
+        reader.onloadend = async () => {
+          const audioBuffer = reader.result;
+          const wavBlob = new Blob([audioBuffer], { type: 'audio/wav' });
+          await processAudioChunk(wavBlob);
+          
+          // Finalizar sesión después de procesar el último chunk
+          await endSession();
+        };
+      } else {
+        await endSession();
+      }
+
+      // Limpiar recursos
+      if (tabStream) {
+        tabStream.getTracks().forEach(track => track.stop());
+      }
+      if (micStream) {
+        micStream.getTracks().forEach(track => track.stop());
+      }
+      if (audioContext && audioContext.state !== 'closed') {
+        audioContext.close();
+      }
+      
+      isRecording = false;
+      updateButtonStates();
+    };
+
+    // Iniciar grabación
+    mediaRecorder.start(1000);
+    isRecording = true;
+    updateButtonStates();
+    startTimer();
+    console.log('Grabación iniciada correctamente');
+
+  } catch (error) {
+    console.error('Error detallado:', error);
+    alert(`Error al iniciar la captura: ${error.message}`);
+    isRecording = false;
+    updateButtonStates();
+    
+    // Limpiar recursos en caso de error
+    if (tabStream) {
+      tabStream.getTracks().forEach(track => track.stop());
+    }
+    if (micStream) {
+      micStream.getTracks().forEach(track => track.stop());
+    }
+    if (audioContext && audioContext.state !== 'closed') {
+      audioContext.close();
+    }
+  }
+}
+
+function stopCapture() {
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    clearInterval(chunkInterval);
+    mediaRecorder.stop();
+    isRecording = false;
+    updateButtonStates();
+    stopTimer();
+  }
+}
 
 function formatTime(milliseconds) {
   const totalSeconds = Math.floor(milliseconds / 1000);
@@ -71,229 +360,6 @@ async function requestMicrophonePermission() {
   } catch (err) {
     console.error('Error específico al solicitar micrófono:', err.name, err.message);
     return false;
-  }
-}
-
-async function startCapture() {
-  try {
-    if (isRecording) {
-      console.log('Ya está grabando');
-      return;
-    }
-
-    // Verificar permisos del micrófono primero
-    const hasMicPermission = await requestMicrophonePermission();
-    if (!hasMicPermission) {
-      throw new Error('No se pudo obtener acceso al micrófono');
-    }
-
-    // Inicializar contexto de audio con mayor calidad
-    audioContext = new AudioContext({
-      latencyHint: 'interactive',
-      sampleRate: 96000
-    });
-
-    // Obtener stream del micrófono con configuración mejorada
-    const micStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: false,  
-        channelCount: 1,
-        sampleRate: 96000,
-        sampleSize: 24
-      }
-    });
-
-    // Capturar audio de la pestaña con configuración optimizada
-    const tabStream = await new Promise((resolve, reject) => {
-      chrome.tabs.query({active: true, currentWindow: true}, async (tabs) => {
-        if (!tabs[0]) {
-          reject(new Error('No se encontró una pestaña activa'));
-          return;
-        }
-
-        chrome.tabCapture.capture({
-          audio: true,
-          video: false,
-          audioConstraints: {
-            mandatory: {
-              chromeMediaSource: 'tab',
-              echoCancellation: true,
-              noiseSuppression: true,
-              autoGainControl: true,
-              sampleRate: 96000 
-            }
-          }
-        }, stream => {
-          if (chrome.runtime.lastError) {
-            reject(new Error(chrome.runtime.lastError.message));
-            return;
-          }
-          if (!stream) {
-            reject(new Error('No se pudo obtener el stream de la pestaña'));
-            return;
-          }
-          resolve(stream);
-        });
-      });
-    });
-
-    // Crear y conectar nodos de audio
-    tabAudioSource = audioContext.createMediaStreamSource(tabStream);
-    micAudioSource = audioContext.createMediaStreamSource(micStream);
-
-    // Configuración del procesamiento de audio para la pestaña
-    // 1. Ecualizador para mejorar claridad
-    const tabEQ = audioContext.createBiquadFilter();
-    tabEQ.type = 'lowshelf';
-    tabEQ.frequency.value = 100;
-    tabEQ.gain.value = -3;
-
-    const tabEQMid = audioContext.createBiquadFilter();
-    tabEQMid.type = 'peaking';
-    tabEQMid.frequency.value = 2500;
-    tabEQMid.Q.value = 1;
-    tabEQMid.gain.value = 2;
-
-    const tabEQHigh = audioContext.createBiquadFilter();
-    tabEQHigh.type = 'highshelf';
-    tabEQHigh.frequency.value = 8000;
-    tabEQHigh.gain.value = 1;
-
-    // 2. Compresor para mejorar la dinámica
-    const tabCompressor = audioContext.createDynamicsCompressor();
-    tabCompressor.threshold.value = -24;
-    tabCompressor.knee.value = 12;
-    tabCompressor.ratio.value = 2.5;
-    tabCompressor.attack.value = 0.005;
-    tabCompressor.release.value = 0.1;
-
-    // 3. Limitador suave para evitar distorsión
-    const tabLimiter = audioContext.createDynamicsCompressor();
-    tabLimiter.threshold.value = -3;
-    tabLimiter.knee.value = 0;
-    tabLimiter.ratio.value = 20;
-    tabLimiter.attack.value = 0.003;
-    tabLimiter.release.value = 0.01;
-
-    // Ganancia final para el tab
-    const tabGain = audioContext.createGain();
-    tabGain.gain.value = 0.1;
-
-    // Ganancia para el micrófono
-    const micGain = audioContext.createGain();
-    micGain.gain.value = 0.7;
-
-    // Conectar la cadena de procesamiento del tab
-    tabAudioSource
-      .connect(tabEQ)
-      .connect(tabEQMid)
-      .connect(tabEQHigh)
-      .connect(tabCompressor)
-      .connect(tabLimiter)
-      .connect(tabGain);
-
-    // Crear compresor para el micrófono
-    const micCompressor = audioContext.createDynamicsCompressor();
-    micCompressor.threshold.value = -24;    // Umbral de compresión
-    micCompressor.knee.value = 10;          // Suavidad de la compresión
-    micCompressor.ratio.value = 4;          // Ratio de compresión
-    micCompressor.attack.value = 0.005;     // Tiempo de ataque
-    micCompressor.release.value = 0.25;     // Tiempo de liberación
-
-    // Crear ecualizador para el micrófono
-    const micEQ = audioContext.createBiquadFilter();
-    micEQ.type = 'highpass';
-    micEQ.frequency.value = 80;  // Eliminar frecuencias muy bajas
-
-    const micPresence = audioContext.createBiquadFilter();
-    micPresence.type = 'peaking';
-    micPresence.frequency.value = 3000;  // Realzar presencia de voz
-    micPresence.Q.value = 1;
-    micPresence.gain.value = 3;
-
-    // Conectar cadena de procesamiento del micrófono
-    micAudioSource
-      .connect(micEQ)
-      .connect(micPresence)
-      .connect(micCompressor)
-      .connect(micGain);
-
-    // Crear nodo para reproducción
-    audioDestination = audioContext.destination;
-
-    // Crear y configurar el merger para la grabación
-    const mergerForRecording = audioContext.createChannelMerger(2);
-    tabGain.connect(mergerForRecording, 0, 0);
-    micGain.connect(mergerForRecording, 0, 1);
-
-    // Crear un segundo merger para la reproducción
-    const mergerForPlayback = audioContext.createChannelMerger(2);
-    tabGain.connect(mergerForPlayback);
-    
-    // Conectar el merger de reproducción al destino de audio
-    mergerForPlayback.connect(audioDestination);
-    
-    // Configurar la grabación con mayor calidad
-    mediaStreamDestination = audioContext.createMediaStreamDestination();
-    mergerForRecording.connect(mediaStreamDestination);
-
-    mediaRecorder = new MediaRecorder(mediaStreamDestination.stream, {
-      mimeType: 'audio/webm;codecs=opus',
-      audioBitsPerSecond: 320000  
-    });
-
-    mediaRecorder.ondataavailable = (event) => {
-      if (event.data.size > 0) {
-        audioChunks.push(event.data);
-      }
-    };
-
-    mediaRecorder.onstop = () => {
-      const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
-      audioChunks = [];
-      convertToWav(audioBlob);
-      
-      // Limpiar recursos
-      if (tabStream) {
-        tabStream.getTracks().forEach(track => track.stop());
-      }
-      if (micStream) {
-        micStream.getTracks().forEach(track => track.stop());
-      }
-      if (audioContext && audioContext.state !== 'closed') {
-        audioContext.close();
-      }
-      isRecording = false;
-      updateButtonStates();
-    };
-
-    // Iniciar la grabación
-    mediaRecorder.start(1000);
-    isRecording = true;
-    updateButtonStates();
-    startTimer();
-    console.log('Grabación iniciada correctamente');
-
-  } catch (error) {
-    console.error('Error detallado:', error);
-    alert(`Error al iniciar la captura: ${error.message}`);
-    isRecording = false;
-    updateButtonStates();
-    
-    if (audioContext && audioContext.state !== 'closed') {
-      audioContext.close();
-    }
-  }
-}
-
-function stopCapture() {
-  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-    mediaRecorder.stop();
-    isRecording = false;
-    updateButtonStates();
-    stopTimer();
   }
 }
 
