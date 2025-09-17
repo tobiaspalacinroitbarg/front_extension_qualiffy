@@ -19,9 +19,12 @@
   "side_panel": {
     "default_path": "sidepanel.html"
   },
-  "host_permissions": [
-    "<all_urls>"
-  ],
+ "content_scripts": [
+  {
+    "matches": ["<all_urls>"],
+    "js": ["content.js"]
+  }
+],
   "icons": {
     "16": "images/icon.png",
     "48": "images/icon.png",

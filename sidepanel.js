@@ -18,6 +18,52 @@ let micStream = null;
 
 const CHUNK_DURATION = 10000; // 10 segundos en milisegundos
 
+// Añadir esta función al principio de tu sidepanel.js
+async function requestTabPermissions() {
+  return new Promise((resolve) => {
+    chrome.tabs.query({active: true, currentWindow: true}, async (tabs) => {
+      if (!tabs[0]) {
+        console.error('No se encontró pestaña activa');
+        resolve(false);
+        return;
+      }
+
+      const tab = tabs[0];
+      console.log('Pestaña activa:', tab.url);
+
+      // Verificar si ya tenemos permisos
+      const hasPermission = await chrome.permissions.contains({
+        origins: [tab.url]
+      });
+
+      if (hasPermission) {
+        console.log('Ya tenemos permisos para esta pestaña');
+        resolve(true);
+        return;
+      }
+
+      // Solicitar permisos
+      try {
+        const granted = await chrome.permissions.request({
+          origins: [tab.url]
+        });
+        
+        if (granted) {
+          console.log('Permisos concedidos para:', tab.url);
+          resolve(true);
+        } else {
+          console.log('Permisos denegados');
+          resolve(false);
+        }
+      } catch (error) {
+        console.error('Error solicitando permisos:', error);
+        resolve(false);
+      }
+    });
+  });
+}
+
+
 async function startSession() {
   try {
     const response = await fetch('http://localhost:8000/start-session', {
@@ -107,7 +153,21 @@ async function startCapture() {
       return;
     }
 
-    // Iniciar nueva sesión
+    // PASO 1: Solicitar permisos de pestaña
+    console.log('Solicitando permisos de pestaña...');
+    const hasTabPermission = await requestTabPermissions();
+    
+    if (!hasTabPermission) {
+      throw new Error('No se obtuvieron permisos para capturar la pestaña');
+    }
+
+    // PASO 2: Verificar permisos del micrófono
+    const hasMicPermission = await requestMicrophonePermission();
+    if (!hasMicPermission) {
+      throw new Error('No se pudo obtener acceso al micrófono');
+    }
+
+    // PASO 3: Iniciar nueva sesión
     currentSessionId = await startSession();
 
     // Reiniciar arrays
@@ -115,37 +175,35 @@ async function startCapture() {
     currentChunk = [];
     allTranscriptions = [];
 
-    // Verificar permisos del micrófono primero
-    const hasMicPermission = await requestMicrophonePermission();
-    if (!hasMicPermission) {
-      throw new Error('No se pudo obtener acceso al micrófono');
-    }
-
-    // Inicializar contexto de audio
+    // PASO 4: Inicializar contexto de audio
     audioContext = new AudioContext({
       latencyHint: 'interactive',
-      sampleRate: 96000
+      sampleRate: 48000  // Reducir a 48kHz para mejor compatibilidad
     });
 
-    // Obtener stream del micrófono
+    // PASO 5: Obtener stream del micrófono
     micStream = await navigator.mediaDevices.getUserMedia({
       audio: {
         echoCancellation: true,
         noiseSuppression: true,
         autoGainControl: false,
         channelCount: 1,
-        sampleRate: 96000,
-        sampleSize: 24
+        sampleRate: 48000,
+        sampleSize: 16
       }
     });
 
-    // Capturar audio de la pestaña
+    // PASO 6: Capturar audio de la pestaña
+    console.log('Iniciando captura de pestaña...');
     tabStream = await new Promise((resolve, reject) => {
       chrome.tabs.query({active: true, currentWindow: true}, async (tabs) => {
         if (!tabs[0]) {
           reject(new Error('No se encontró una pestaña activa'));
           return;
         }
+
+        const tab = tabs[0];
+        console.log('Capturando audio de pestaña:', tab.url);
 
         chrome.tabCapture.capture({
           audio: true,
@@ -154,13 +212,14 @@ async function startCapture() {
             mandatory: {
               chromeMediaSource: 'tab',
               echoCancellation: true,
-              noiseSuppression: true,
-              autoGainControl: true,
-              sampleRate: 96000
+              noiseSuppression: false,
+              autoGainControl: false,
+              sampleRate: 48000
             }
           }
         }, stream => {
           if (chrome.runtime.lastError) {
+            console.error('Error en tabCapture:', chrome.runtime.lastError.message);
             reject(new Error(chrome.runtime.lastError.message));
             return;
           }
@@ -168,40 +227,37 @@ async function startCapture() {
             reject(new Error('No se pudo obtener el stream de la pestaña'));
             return;
           }
+          
+          console.log('Stream de pestaña obtenido correctamente');
           resolve(stream);
         });
       });
     });
 
-    // Crear y conectar nodos de audio
+    // PASO 7: Crear y conectar nodos de audio (resto del código igual)
     tabAudioSource = audioContext.createMediaStreamSource(tabStream);
     micAudioSource = audioContext.createMediaStreamSource(micStream);
 
-    // Configuración del procesamiento de audio
     const tabGain = audioContext.createGain();
     tabGain.gain.value = 0.1;
 
     const micGain = audioContext.createGain();
     micGain.gain.value = 0.7;
 
-    // Conectar fuentes
     tabAudioSource.connect(tabGain);
     micAudioSource.connect(micGain);
-
 
     audioDestination = audioContext.destination;
     tabGain.connect(audioDestination);
     
-    // Crear nodo para grabación
     mediaStreamDestination = audioContext.createMediaStreamDestination();
-    
-    // Conectar al destino de grabación
     tabGain.connect(mediaStreamDestination);
     micGain.connect(mediaStreamDestination);
 
+    // Resto de tu código de MediaRecorder...
     mediaRecorder = new MediaRecorder(mediaStreamDestination.stream, {
       mimeType: 'audio/webm;codecs=opus',
-      audioBitsPerSecond: 320000
+      audioBitsPerSecond: 128000  // Reducir bitrate
     });
 
     mediaRecorder.ondataavailable = (event) => {
@@ -556,5 +612,252 @@ document.addEventListener('DOMContentLoaded', () => {
         console.error('Error en stopBtn:', error);
       }
     });
+  }
+});
+// Selector de tab mejorado con detección robusta
+let selectedTab = null;
+let isDetectingTab = false;
+
+// Función mejorada para obtener la pestaña actual
+async function selectCurrentTab() {
+  if (isDetectingTab) return;
+  
+  try {
+    isDetectingTab = true;
+    const btn = document.getElementById('selectCurrentTab');
+    
+    // Mostrar estado de carga
+    if (btn) {
+      btn.classList.add('loading');
+      updateTabDisplay({
+        title: 'Detectando pestaña...',
+        url: 'Buscando pestaña activa...',
+        icon: '⏳'
+      }, false);
+    }
+    
+    console.log('Detectando pestaña activa...');
+    
+    // Método 1: Intentar obtener pestaña via background
+    let tab = await getTabViaBackground();
+    
+    // Método 2: Si falla, intentar obtener directamente
+    if (!tab || !tab.url || tab.url === 'Sin URL') {
+      console.log('Método background falló, intentando método directo...');
+      tab = await getTabDirectly();
+    }
+    
+    // Método 3: Si aún falla, obtener la primera pestaña disponible
+    if (!tab || !tab.url || tab.url === 'Sin URL') {
+      console.log('Método directo falló, obteniendo cualquier pestaña disponible...');
+      tab = await getAnyAvailableTab();
+    }
+    
+    if (tab && tab.url && tab.url !== 'Sin URL') {
+      selectedTab = tab;
+      updateTabDisplay(tab, true);
+      console.log('✅ Pestaña detectada:', tab.title, tab.url);
+      
+      // Mostrar indicador de éxito
+      showSuccessNotification('Pestaña detectada correctamente');
+    } else {
+      throw new Error('No se pudo detectar ninguna pestaña válida');
+    }
+    
+  } catch (error) {
+    console.error('❌ Error detectando pestaña:', error);
+    updateTabDisplay({
+      title: 'Error de detección',
+      url: 'No se pudo detectar la pestaña activa',
+      icon: '❌'
+    }, false);
+    
+    showErrorNotification('Error al detectar la pestaña: ' + error.message);
+  } finally {
+    isDetectingTab = false;
+    const btn = document.getElementById('selectCurrentTab');
+    if (btn) {
+      btn.classList.remove('loading');
+    }
+  }
+}
+
+// Método 1: Obtener tab via background script
+async function getTabViaBackground() {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage({action: 'getCurrentTab'}, (response) => {
+      if (chrome.runtime.lastError) {
+        console.log('Error en background:', chrome.runtime.lastError.message);
+        resolve(null);
+        return;
+      }
+      
+      if (response && response.tab) {
+        console.log('Tab obtenida via background:', response.tab);
+        resolve(response.tab);
+      } else {
+        resolve(null);
+      }
+    });
+  });
+}
+
+// Método 2: Obtener tab directamente
+async function getTabDirectly() {
+  return new Promise((resolve) => {
+    try {
+      chrome.tabs.query({active: true, currentWindow: true}, (tabs) => {
+        if (chrome.runtime.lastError) {
+          console.log('Error query directo:', chrome.runtime.lastError.message);
+          resolve(null);
+          return;
+        }
+        
+        if (tabs && tabs.length > 0 && tabs[0]) {
+          console.log('Tab obtenida directamente:', tabs[0]);
+          resolve(tabs[0]);
+        } else {
+          resolve(null);
+        }
+      });
+    } catch (error) {
+      console.log('Error en método directo:', error);
+      resolve(null);
+    }
+  });
+}
+
+// Método 3: Obtener cualquier tab disponible
+async function getAnyAvailableTab() {
+  return new Promise((resolve) => {
+    try {
+      chrome.tabs.query({}, (tabs) => {
+        if (chrome.runtime.lastError) {
+          resolve(null);
+          return;
+        }
+        
+        // Buscar la primera pestaña que no sea chrome:// o extension://
+        const validTab = tabs.find(tab => 
+          tab.url && 
+          !tab.url.startsWith('chrome://') && 
+          !tab.url.startsWith('chrome-extension://') &&
+          !tab.url.startsWith('edge://') &&
+          !tab.url.startsWith('about:')
+        );
+        
+        if (validTab) {
+          console.log('Tab válida encontrada:', validTab);
+          resolve(validTab);
+        } else {
+          resolve(null);
+        }
+      });
+    } catch (error) {
+      resolve(null);
+    }
+  });
+}
+
+// Función para actualizar la visualización del botón
+function updateTabDisplay(tab, isSelected = false) {
+  const btn = document.getElementById('selectCurrentTab');
+  if (!btn) return;
+  
+  const iconElement = btn.querySelector('.tab-icon');
+  const titleElement = btn.querySelector('.tab-title');
+  const urlElement = btn.querySelector('.tab-url');
+  const statusElement = btn.querySelector('.tab-status');
+  
+  if (iconElement) {
+    iconElement.textContent = tab.icon || (isSelected ? '✅' : '🎯');
+  }
+  
+  if (titleElement) {
+    titleElement.textContent = truncateText(tab.title || 'Sin título', 35);
+  }
+  
+  if (urlElement) {
+    const displayUrl = formatUrl(tab.url || 'Sin URL');
+    urlElement.textContent = truncateText(displayUrl, 40);
+  }
+  
+  if (statusElement) {
+    statusElement.style.display = isSelected ? 'flex' : 'none';
+  }
+  
+  // Actualizar clases
+  btn.classList.toggle('selected', isSelected);
+}
+
+// Funciones auxiliares
+function truncateText(text, maxLength) {
+  if (text.length <= maxLength) return text;
+  return text.substring(0, maxLength - 3) + '...';
+}
+
+function formatUrl(url) {
+  try {
+    if (url === 'Sin URL' || !url) return 'Sin URL';
+    const urlObj = new URL(url);
+    return urlObj.hostname + urlObj.pathname;
+  } catch {
+    return url;
+  }
+}
+
+function showSuccessNotification(message) {
+  console.log('✅ ' + message);
+  // Aquí puedes añadir una notificación visual si quieres
+}
+
+function showErrorNotification(message) {
+  console.error('❌ ' + message);
+  // Aquí puedes añadir una notificación visual de error si quieres
+}
+
+// Función para auto-detectar pestaña al cargar
+async function autoDetectTab() {
+  // Esperar un poco para que Chrome esté listo
+  setTimeout(() => {
+    selectCurrentTab();
+  }, 500);
+}
+
+// Event listener mejorado
+document.addEventListener('DOMContentLoaded', () => {
+  // Tu código existente...
+  updateButtonStates();
+  
+  const startBtn = document.querySelector('.start-btn');
+  const stopBtn = document.querySelector('.stop-btn');
+  
+  if (startBtn) {
+    startBtn.addEventListener('click', async () => {
+      try {
+        await startCapture();
+      } catch (error) {
+        console.error('Error en startBtn:', error);
+      }
+    });
+  }
+  
+  if (stopBtn) {
+    stopBtn.addEventListener('click', () => {
+      try {
+        stopCapture();
+      } catch (error) {
+        console.error('Error en stopBtn:', error);
+      }
+    });
+  }
+  
+  // Event listener para el botón de seleccionar tab
+  const selectTabBtn = document.getElementById('selectCurrentTab');
+  if (selectTabBtn) {
+    selectTabBtn.addEventListener('click', selectCurrentTab);
+    
+    // Auto-detectar pestaña al cargar
+    autoDetectTab();
   }
 });
